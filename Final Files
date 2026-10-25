@@ -1,0 +1,226 @@
+class Game {
+
+  constructor() {
+    this.magpie = new Magpie(width / 2, height / 2);
+    this.mothership = new Mothership(width / 2, 70);
+    this.inputs = new Inputs(this.magpie);
+    this.restart();
+  }
+
+  restart() {
+    this.score = 0;
+    this.lives = Game.STARTING_LIVES;
+    this.levelNumber = 1;
+    this.state = "banner"; 
+    this.bannerTimer = Game.BANNER_MS;
+    this.startLevel(1);
+  }
+
+  startLevel(n) {
+    this.levelNumber = n;
+    this.bannerNote = null;
+    this.magpie.reset(width / 2, height / 2 + 120);
+    this.level = new Level(n, [
+      { x: this.magpie.physics.x, y: this.magpie.physics.y, radius: 140 },
+      { x: this.mothership.physics.x, y: this.mothership.physics.y, radius: 160 },
+    ]);
+    this.state = "banner";
+    this.bannerTimer = Game.BANNER_MS;
+  }
+
+  update(delta) {
+    if (this.inputs.consumeDebugToggle()) this.showPickup = !this.showPickup;
+    if (this.state === "won" || this.state === "lost") {
+      if (this.inputs.consumeRestart()) this.restart();
+      return;
+    }
+    if (this.state === "banner") {
+      this.bannerTimer -= delta;
+      if (this.bannerTimer <= 0) this.state = "playing";
+      return;
+    }
+
+    this.inputs.handleKeyDown(delta);
+    this.magpie.update(delta);
+    this.level.update(delta);
+
+    
+    const caught = this.resolveBeam(delta);
+    if (caught && !this.magpie.capturedJunk) {
+      this.level.remove(caught);
+      caught.beamTime = 0;
+      this.magpie.capturedJunk = caught;
+      this.magpie.enableBeam(false);
+    }
+
+    
+    if (this.resolveDropoff(delta)) {
+      this.magpie.capturedJunk = null;
+      this.magpie.dropoffTime = 0;
+      this.score += Game.POINTS_PER_JUNK;
+    }
+
+    
+    if (this.level.isCleared && !this.magpie.capturedJunk) {
+      if (this.levelNumber >= Level.MAX_LEVEL) {
+        this.state = "won";
+      } else {
+        this.startLevel(this.levelNumber + 1);
+      }
+    }
+
+    // Out of time: lose a ship (checked after the clear test so a last-moment delivery still counts)
+    if (this.state === "playing" && this.level.isOutOfTime) this.loseLife();
+  }
+
+  loseLife() {
+    this.lives--;
+    if (this.lives <= 0) {
+      this.state = "lost";
+    } else {
+      this.startLevel(this.levelNumber); // same level, fresh junk and clock
+      this.bannerNote = "Out of time! Ship lost.";
+    }
+  }
+
+  // Same charge-and-drain pattern as the beam, but the trigger is
+  // "is the Magpie in the pickup circle?". Only one junk is carried, so no loop.
+  resolveDropoff(delta) {
+    const m = this.magpie;
+    if (m.capturedJunk && this.mothership.isNear(m.physics)) {
+      m.dropoffTime += delta;
+      return m.dropoffTime > Game.JUNK_DROPOFF_TIME_MS;
+    }
+    m.dropoffTime = Math.max(0, m.dropoffTime - delta);
+    return false;
+  }
+
+  
+  resolveBeam(delta) {
+    const inBeam = [];
+    for (const junk of this.level.junk) {
+      if (this.magpie.beamContains(junk.physics)) {
+        junk.beamTime += delta;
+        inBeam.push(junk);
+      } else {
+        junk.beamTime = Math.max(0, junk.beamTime - delta);
+      }
+    }
+    if (inBeam.length > 0) {
+      let best = inBeam[0];
+      for (const junk of inBeam) {
+        if (junk.beamTime > best.beamTime) best = junk;
+      }
+      if (best.beamTime > Game.JUNK_CATCH_TIME_MS) return best;
+    }
+    return null;
+  }
+
+  render() {
+    background("#0b0d1a");
+    this.renderStars();
+    this.mothership.render(!!this.magpie.capturedJunk || this.showPickup);
+    for (const j of this.level.junk) j.render(Game.JUNK_CATCH_TIME_MS);
+    this.magpie.render();
+    this.renderDropoff();
+    this.renderHud();
+    if (this.state === "banner") {
+      this.renderBanner(
+        this.bannerNote || `Level ${this.levelNumber}`,
+        this.bannerNote ? `Level ${this.levelNumber} - ${this.lives} ${this.lives === 1 ? "ship" : "ships"} left` : "Beam up the junk and bring it to the mothership",
+      );
+    }
+    if (this.state === "lost") this.renderBanner("Game over", `Final score: ${this.score}  -  press R to play again`);
+    if (this.state === "won") this.renderBanner("Space is clean!", `Final score: ${this.score}  -  press R to play again`);
+  }
+
+  renderStars() {
+    
+    if (!this.stars) {
+      randomSeed(42);
+      this.stars = Array.from({ length: 80 }, () => [random(width), random(height), random(1, 2.2)]);
+      randomSeed(millis());
+    }
+    noStroke();
+    fill("#ffffff80");
+    for (const [x, y, s] of this.stars) circle(x, y, s);
+  }
+
+  renderDropoff() {
+    const frac = constrain(this.magpie.dropoffTime / Game.JUNK_DROPOFF_TIME_MS, 0, 1);
+    if (frac <= 0) return;
+    push();
+    noFill();
+    stroke("#70eef5");
+    strokeWeight(3);
+    arc(this.magpie.physics.x, this.magpie.physics.y, 80, 80, -HALF_PI, -HALF_PI + TWO_PI * frac);
+    pop();
+  }
+
+  renderHud() {
+    push();
+    noStroke();
+    fill("#e8ecff");
+    textSize(16);
+    textAlign(LEFT, TOP);
+    text(`Score: ${this.score}`, 12, 10);
+    text(`Level: ${this.levelNumber}/${Level.MAX_LEVEL}`, 12, 32);
+    textAlign(RIGHT, TOP);
+    text(`Junk left: ${this.level.junk.length + (this.magpie.capturedJunk ? 1 : 0)}`, width - 12, 10);
+    this.renderTimer();
+    this.renderLives();
+    textAlign(CENTER, BOTTOM);
+    fill("#e8ecff99");
+    textSize(13);
+    const hint = this.magpie.capturedJunk
+      ? "Carrying junk - fly to the mothership!"
+      : "W/S thrust   A/D turn   SPACE tractor beam";
+    text(hint, width / 2, height - 10);
+    pop();
+  }
+
+  renderTimer() {
+    push();
+    const ms = this.level.timeLeft;
+    const [minutes, seconds] = timeToStringParts(ms);
+    noStroke();
+    fill(ms <= 10000 ? "#ff6b6b" : "#e8ecff");
+    textSize(24);
+    textAlign(CENTER, TOP);
+    text(`${minutes}:${seconds}`, width / 2, 8);
+    pop();
+  }
+
+  // The ship you're flying is a life but not a spare, so draw lives - 1.
+  // push/pop inside the loop so each ship starts from a clean transform.
+  renderLives() {
+    for (let i = 0; i < this.lives - 1; i++) {
+      push();
+      translate(34 + i * 40, 76);
+      scale(0.5);
+      Magpie.drawMagpie({ rotation: 0, beam: false });
+      pop();
+    }
+  }
+
+  renderBanner(title, sub) {
+    push();
+    noStroke();
+    fill("#0b0d1acc");
+    rect(0, height / 2 - 60, width, 120);
+    fill("#e8ecff");
+    textAlign(CENTER, CENTER);
+    textSize(36);
+    text(title, width / 2, height / 2 - 14);
+    textSize(16);
+    text(sub, width / 2, height / 2 + 28);
+    pop();
+  }
+}
+
+
+Game.JUNK_CATCH_TIME_MS = 1000;
+Game.POINTS_PER_JUNK = 100;
+Game.JUNK_DROPOFF_TIME_MS = 800;
+Game.STARTING_LIVES = 3;
+Game.BANNER_MS = 2000;
